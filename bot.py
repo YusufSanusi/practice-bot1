@@ -1,91 +1,104 @@
+# encoding: utf-8
+
+# import needed libraries
+from traderlib import *
+from logger import *
+import sys
+from dotenv import load_dotenv
+import alpaca_trade_api as tradeapi
+
+# from alpaca_trade_api.rest import REST
+
+import gvars
+
+# Load environment variables from .env file
+load_dotenv()
+
+apca_api_base_url = os.getenv('APCA_API_BASE_URL')
+apca_api_key_id = os.getenv('APCA_API_KEY_ID')
+apca_api_secret_key = os.getenv('APCA_API_SECRET_KEY')
+
+
+# check trading account
+def check_account_status(api):
+    try:
+        account = api.get_account()
+        if account.status != 'ACTIVE':
+            log.error('The account is not active, aborting')
+            sys.exit()
+    except Exception as e:
+        log.error('Could not get account info, aborting')
+        log.error(str(e))
+        sys.exit()
+
+
+# close current orders
+def close_open_orders(api):
+    '''
+    open_orders = api.list_orders(
+        status='open',
+        limit=100,
+        nested=True  # show nested multi-leg orders
+    )
+    if not open_orders:
+        log.info('No open orders')
+    else:
+        log.info('List of open orders')
+        log.info(open_orders)
+        log.info('Cancelling all open orders')
+        api.cancel_all_orders()
+
+
+    # for order in open_orders:
+    #     #close order
+    #     log.info('Order %s closed' % str(order.id))
+
+    log.info('All pending orders closed')
+    '''
+
+    log.info('Cancelling all open orders')
+    
+    try:
+        api.cancel_all_orders()
+        log.info('All pending orders cancelled')
+    except Exception as e:
+        log.error('Could not cancel orders')
+        log.error(e)
+
+
+
 # define asset
-    # IN: keyboard
-    # OUT: string
+def get_ticker():
+    # enter ticker with the keyboard
+    ticker = input('Enter desired asset ticker: ')
+    return ticker
 
-#LOOP until timeout reached (ex. 2h)
-#POINT ECHO: INITIAL CHECK
-# check the position: ask broker/API if we have an open position with "asset"
-    # IN: asset (string)
-    # OUT: True (exists) / False (does not exist)
 
-# check if tradable: ask broker/API if "asset" is tradable
-    # IN: asset (string)
-    # OUT: True (exists) / False (does not exist)
+# execute trading bot
+def main():
+    api = tradeapi.REST(apca_api_key_id, apca_api_secret_key)
 
-#GENERAL TREND
-# load 30 min candles: demand the API 30 min candles or go back to beginning
-    # IN: asset (for whatever the API needs), time range*, candle size*
-    # OUT: 30 min candles (OHLC for every candle)
+    # initialize the logger
+    initialize_logger()
 
-# perform general trend analysis: detect interesting trend (UP / DOWN / NO TREND)
-    # IN: 30 min candles data (Close data)
-    # OUTput: UP / DOWN / NO TREND (string)
-    #If no trend defined, go back to POINT ECHO
+    # check trading account
+    check_account_status(api)
 
-#LOOP until timeout reached (ex. 30min)
-# POINT DELTA
-    # STEP 1: load 5 min candles
-        # IN: asset (for whatever the API needs), time range*, candle size*
-        # OUT: 5 min candles (OHLC for every candle)
-        # If failed go back to POINT DELTA
+    # close current orders
+    close_open_orders(api)
 
-    # STEP 2: perform instant trend analysis: confirm the trend detected by GT analysis
-        # IN: 5 min candles data (Close date), output of the GT analysis (Up / Down string)
-        # OUT: True (confirmed) / False (not confirmed)
-        # If failed go back to POINT DELTA
+    # # define asset
+    # ticker = get_ticker()
+    #
+    # trader = Trader(ticker)  # initialize trading bot
+    # trading_successful = trader.run()  # run trading bot
+    # # IN: string (ticker)
+    # # OUT: boolean (True = success, False = failure)
+    #
+    # if not trading_successful:
+    #     log.info('Trading was not successful, locking asset')
+    #     # wait some time
 
-    # STEP 3: perform RSI analysis
-        # IN: 5 min candles data (Close date), output of the GT analysis (Up / Down string)
-        # OUT: True (confirmed) / False (not confirmed)
-        # If failed go back to POINT DELTA
 
-    # STEP 4: perform stochastic analysis
-        # IN: 5 min candles data (OHLC date), output of the GT analysis (Up / Down string)
-        # OUT: True (confirmed) / False (not confirmed)
-        # If failed go back to POINT DELTA
-
-#SUBMIT ORDER
-# submit order (limit order): interact with broker API
-    # IN: number of shares, asset, desired price
-    # OUT: True (confirmed) / False (not confirmed), position ID
-    # If False, abort / go back to POINT ECHO
-
-# check position: see if position exists
-    # IN: position ID
-    # OUT: True (confirmed) / False (not confirmed)
-    # If False, abort / go back to POINT ECHO
-
-#LOOP until timeout reached (ex. ~8h)
-#ENTER POSITION MODE: check the conditions in parallel
-# IF check take profit -> close position
-    # IN: current gains (earning $)
-    # OUT: True / False
-
-# ELIF check stop loss -> close position
-    # IN: current gains (losing $)
-    # OUT: True / False
-
-# ELIF check stoch crossing -> close position
-    # STEP 1: pull 5 minutes OHLC data.
-        # IN: asset
-        # OUT: OHLC data (5 min candles)
-
-    # STEP 2: check stochastic curves crossing
-        # IN: OHLC data (5 min candles)
-        # OUT: True / False
-
-#GET OUT
-#SUBMIT ORDER
-# submit order (market): interact with broker API
-    # IN: number of shares, asset, position ID
-    # OUT: True (confirmed) / False (not confirmed)
-    # If False, retry until True
-
-# check position: see if position exists
-    # IN: position ID
-    # OUT: True (still exists!) / False (does not exist)
-    # If False, abort / go back to SUBMIT ORDER
-
-# wait 15 min
-
-# end
+if __name__ == '__main__':
+    main()
