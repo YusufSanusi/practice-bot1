@@ -9,13 +9,17 @@ stop_loss_margin = 0.05  # percentage margin
 take_profit_margin = 0.1  # percentage margin
 
 # Max Spent Equity: total equity to spend in a single operation
-max_spent_equity = 1000  # $
+max_spent_equity = 10000  # $
 
 # MAX ATTEMPTS SECTION
 check_position_max_attempts = 5
+cancel_pending_order_max_attempts = 5
 get_shares_amount_max_attempts = 5
 get_general_trend_max_attempts = 5
 get_instant_trend_max_attempts = 10
 get_rsi_max_attempts = 5
 get_stochastic_max_attempts = 5
-enter_position_mode_max_attempts = 420
+enter_position_mode_max_attempts = 120
+
+# LIMIT PRICE
+max_var = 0.01 # max variation percentage when buying/selling

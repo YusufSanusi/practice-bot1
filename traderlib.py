@@ -5,6 +5,8 @@ import sys, time, os, pytz
 import numpy as np
 import tulipy as ti
 import pandas as pd
+import yfinance as yf
+
 
 import gvars
 
@@ -14,16 +16,58 @@ from datetime import datetime
 from math import ceil
 
 class Trader:
-    def __init__(self, ticker):
+    # constructor
+    def __init__(self, api, ticker):
         log.info('Trader initialized with ticker %s' % ticker)
         self.ticker = ticker
+        self.api = api
 
-    # # check if tradable: ask broker/API if "asset" is tradable
+    # get start time clock
+    def get_time_now(self):
+        try:
+            clock = self.api.get_clock()
+            now = datetime.fromisoformat(str(clock.timestamp)).timestamp()
+            return now
+        except Exception as e:
+            log.error('Error getting current time')
+            log.error(e)
+            sys.exit()
+
+    # get next market close time clock
+    def end_of_day(self):
+        try:
+            clock = self.api.get_clock()
+            next_market_close_time = datetime.fromisoformat(str(clock.next_close)).timestamp()
+            return next_market_close_time - 600
+        except Exception as e:
+            log.error('Error getting next market close time')
+            log.error(e)
+            sys.exit()
+
+    # difference in minutes
+    def difference_in_minutes(self, start_time, minutes):
+    
+        try:
+            clock = self.api.get_clock()
+            now = datetime.fromisoformat(str(clock.timestamp)).timestamp()
+            # next_close = datetime.fromisoformat(str(clock.next_close)).timestamp()
+
+            difference = now - start_time
+
+            difference_minutes = difference / 60
+
+            return difference_minutes <= minutes
+        except Exception as e:
+            log.error('Something went wrong getting the difference in minutes')
+            log.error(e)
+            sys.exit()
+
+    # check if tradable: ask broker/API if "asset" is tradable
     def is_tradable(self, ticker):
             # IN: ticker (string)
             # OUT: True (tradable) / False (not tradable)
             try:
-                # asset = get asset from API
+                asset = self.api.get_asset(ticker)
                 if asset.tradable:
                     log.info('The asset %s is tradable' % ticker)
                     return True
@@ -79,28 +123,106 @@ class Trader:
             log.error('The trend is not clear: %s' % str(trend))
             sys.exit()
 
-    # load stock data from API:
-        # IN: ticker, interval, enteries limit
-        # OUT: array with stock data (OHCL)
-
     # get open positions
-    def get_open_positions(self, assetId):
-        # IN: assetId
+    def get_open_positions(self, ticker):
+        # IN: ticker
         # OUT: boolean (True = already open, False = not open)
-        #positions = ask API
-        for position in positions:
-            if position.symbol == assetId:
-                return True
-            else:
-                return False
+        positions = self.api.list_positions()
+        if positions:
+            for position in positions:
+                if position.symbol == ticker:
+                    return True
+                else:
+                    return False
+        else:
+            return False
 
     # submit order: gets our order through the API (retry)
+    def submit_order(self, type, trend, ticker, shares_quantity, current_price, exit=False):
         # IN: order data (number of shares, order type)
         # OUT: boolean (True = order successful / False = order failed)
 
+        log.info('Submitting %s order for %s' % (trend, ticker))
+
+        match trend:
+            case 'long':
+                if not exit:
+                    side = 'buy'
+                    limit_price = round(current_price + (current_price * gvars.max_var), 2)
+                elif exit:
+                    side = 'sell'
+            case 'short':
+                if not exit:
+                    side = 'sell'
+                    limit_price = round(current_price - (current_price * gvars.max_var), 2)
+                elif exit:
+                    side = 'buy'
+            case _:
+                log.error('Trend was not understood')
+                sys.exit()
+
+        try:
+
+            if type == 'limit':
+                log.info('Current price: %.2f // Limit price: %.2f' % (current_price, limit_price))
+                order = self.api.submit_order(
+                    symbol=ticker,
+                    qty=shares_quantity,
+                    side=side,
+                    type=type,
+                    time_in_force='gtc',
+                    limit_price=limit_price
+                )
+
+            elif type == 'market':
+                log.info('Current price: %.2f' % current_price)
+                order = self.api.submit_order(
+                    symbol=ticker,
+                    qty=shares_quantity,
+                    side=side,
+                    type=type,
+                    time_in_force='gtc'
+                )
+
+            else:
+                log.error('Type of order was not understood')
+                sys.exit()
+
+            self.order_id = order.id
+
+            log.info('%s order submitted correctly!' % trend)
+            log.info('%d shares %s for %s' % (shares_quantity, side, ticker))
+            log.info('Order ID: %s' % self.order_id)
+            return True
+
+        except Exception as e:
+            log.error('Something happened when submitting order')
+            log.error(e)
+            return False
+
     # cancel order: cancels our order (retry)
+    def cancel_pending_order(self, ticker):
         # IN: order ID
         # OUT: boolean (True = order cancelled / False = order not cancelled)
+
+        attempt = 1
+
+        log.info('Cancelling %s order %s' % (ticker, self.order_id))
+
+        while attempt <= gvars.cancel_pending_order_max_attempts:
+            try:
+                self.api.cancel_order(self.order_id)
+                log.info('%s order %s successfully cancelled' % (ticker, self.order_id))
+                return True
+            except:
+                log.info('Cancelling order failed, retrying...')
+                time.sleep(5)
+                attempt += 1
+            
+            log.error('Something went wrong when cancelling order. cancelling all pending orders just to be safe.')
+            log.info('Order ID: %s' % self.order_id)
+            self.api.cancel_all_orders()
+            sys.exit()
 
     # check position whether it exists or not
     def check_position(self, ticker, doNotWait=False):
@@ -110,9 +232,11 @@ class Trader:
 
         while attempt <= gvars.check_position_max_attempts:
             try:
-                #position = ask API
+                position = self.api.get_position(ticker)
                 current_price = position.current_price
+                
                 log.info('The position was found. Current price is: %.2f' % current_price)
+                self.position = position
                 return True
             except:
                 if doNotWait:
@@ -120,7 +244,7 @@ class Trader:
                     return False
 
                 log.info('Position not found, retrying...')
-                time.sleep(5) # wait 5 secs and retry
+                time.sleep(10) # wait 5 secs and retry
                 attempt += 1
 
         log.info('Position not found for %s, moving on.' % ticker)
@@ -136,14 +260,18 @@ class Trader:
 
         try:
             # get the total equity available
-            #total_equity = ask API
+            account = self.api.get_account()
+            equity = float(account.equity)
 
             # calculate the number of shares
             shares_quantity = int(gvars.max_spent_equity / asset_price)
 
-            log.info('Total shares to operate: %d' % shares_quantity)
-
-            return shares_quantity
+            if equity - (shares_quantity * asset_price) >= 0:
+                log.info('Total shares to operate: %d' % shares_quantity)
+                return shares_quantity
+            else:
+                log.info('Cannot spend that amount, remaining equity is %.2f' % equity)
+                sys.exit()
         
         except Exception as e:
             log.error('Error at get shares amount')
@@ -158,10 +286,11 @@ class Trader:
 
         while attempt <= gvars.get_shares_amount_max_attempts:
             try:
-                #position = ask API
-                current_price = position.current_price
-                log.info('The current price is: %.2f' % current_price)
+                data = self.fetch_historical_data(ticker, '1m', '1d')
+                close = data.Close.values
+                current_price = round(float(close[-1]),2)
                 return current_price
+
             except:
                 log.info('Position not found, retrying...')
                 time.sleep(5) # wait 5 secs and retry
@@ -169,6 +298,22 @@ class Trader:
 
         log.error('Position not found for %s, moving on.' % ticker)
         return None
+
+    # load stock data from API:
+    def fetch_historical_data(self, ticker, interval, period):
+        # load historical stock data
+        # IN : ticker, interval
+        # OUT : stock data (OHLC)
+
+        try:
+            asset = yf.Ticker(ticker)
+            data = asset.history(period, interval)
+            return data
+
+        except Exception as e:
+            log.error('Something went wrong while fetching historical data')
+            log.error(e)
+            sys.exit()
 
     # get general trend: detect interesting trend (long / short / False if NO TREND)
     def get_general_trend(self, ticker):
@@ -181,14 +326,16 @@ class Trader:
 
         try:
             while True:
-                #data = ask 30 min stock data
+                
+                data = self.fetch_historical_data(ticker, '30m', '5d')
+                close = data.Close.values
 
                 # calculate the EMAs
-                ema9 = ti.ema(data, 9)
-                ema26 = ti.ema(data, 26)
-                ema50 = ti.ema(data, 50)
+                ema9 = ti.ema(close, 9)[-1]
+                ema26 = ti.ema(close, 26)[-1]
+                ema50 = ti.ema(close, 50)[-1]
 
-                log.info('%s general trend EMAs = [%.2f, %.2f, %.2f]' % (ticker, ema9, ema26, ema50))
+                log.info('%s general trend EMAs = [EMA9: %.2f, EMA26: %.2f, EMA50: %.2f]' % (ticker, ema9, ema26, ema50))
 
                 # checking EMAs relative position
                 if (ema50 > ema26) and (ema26 > ema9):
@@ -222,14 +369,15 @@ class Trader:
         try:
             while True:
 
-                #data = ask 5 min stock data
+                data = self.fetch_historical_data(ticker, '5m', '1d')
+                close = data.Close.values
 
                 # calculate the EMAs
-                ema9 = ti.ema(data, 9)
-                ema26 = ti.ema(data, 26)
-                ema50 = ti.ema(data, 50)
+                ema9 = ti.ema(close, 9)[-1]
+                ema26 = ti.ema(close, 26)[-1]
+                ema50 = ti.ema(close, 50)[-1]
 
-                log.info('%s instant trend EMAs = [%.2f, %.2f, %.2f]' % (ticker, ema9, ema26, ema50))
+                log.info('%s instant trend EMAs = [EMA9: %.2f, EMA26: %.2f, EMA50: %.2f]' % (ticker, ema9, ema26, ema50))
 
                 if (trend == 'long') and (ema9 > ema26) and (ema26 > ema50):
                     log.info('Long trend confirmed for %s' % ticker)
@@ -261,10 +409,11 @@ class Trader:
         try:
             while True:
 
-                #data = ask 5 min stock data
+                data = self.fetch_historical_data(ticker, '5m', '5d')
+                close = data.Close.values
 
                 # calculate the RSI
-                rsi = ti.rsi(data, 14) # uses 14-sample-window
+                rsi = ti.rsi(close, 14)[-1] # uses 14-sample-window
 
                 log.info('%s rsi = [%.2f]' % (ticker, rsi))
 
@@ -283,7 +432,7 @@ class Trader:
                 
         except Exception as e:
             log.error('Something went wrong at rsi analysis')
-            log.error(str(e))
+            log.error(e)
             sys.exit()
 
     # get stochastic: perform STOCHASTIC analysis
@@ -299,10 +448,15 @@ class Trader:
         try:
             while True:
 
-                #data = ask 5 min stock data
+                data = self.fetch_historical_data(ticker, '5m', '5d')
+                high = data.High.values
+                low = data.Low.values
+                close = data.Close.values
 
                 # calculate the STOCHASTIC
                 stoch_k, stoch_d = ti.stoch(high, low, close, 9, 6, 9)
+                stoch_k = stoch_k[-1]
+                stoch_d = stoch_d[-1]
 
                 log.info('%s stochastic = [%.2f, %.2f]' % (ticker, stoch_k, stoch_d))
 
@@ -331,16 +485,21 @@ class Trader:
 
         log.info('Checking stochastic crossing...')
 
-        #data = ask 5 min data
+        data = self.fetch_historical_data(ticker, '5m', '5d')
+        high = data.High.values
+        low = data.Low.values
+        close = data.Close.values
 
         # get stochastic values
         stoch_k, stoch_d = ti.stoch(high, low, close, 9, 6, 9)
+        stoch_k = stoch_k[-1]
+        stoch_d = stoch_d[-1]
 
         log.info('%s stochastic = [%.2f, %.2f]' % (ticker, stoch_k, stoch_d))
 
         try:
             if (trend == 'long') and (stoch_k <= stoch_d):
-                log.info('Stochastic curves crossed: %s, k=%.2f, d=%.2f' % (trend, stoch_k, stoch_d))
+                log.info('Stochastic curves crossed: %s, K_FAST=%.2f, D_SLOW=%.2f' % (trend, stoch_k, stoch_d))
                 return True
             elif (trend == 'short') and (stoch_k >= stoch_d):
                 log.info('Stochastic curves crossed: %s, k=%.2f, d=%.2f' % (trend, stoch_k, stoch_d))
@@ -357,7 +516,9 @@ class Trader:
     # enter position mode: check the conditions in parallel
     def enter_position_mode(self, ticker, trend):
 
-        #entry_price = ask the API
+        # order = self.api.get_order(order_id)
+        # position = self.api.get_position(ticker)
+        entry_price = self.position.avg_entry_price
 
         # set the take profit
         take_profit = self.set_take_profit(entry_price, trend)
@@ -421,67 +582,78 @@ class Trader:
 
     def run(self):
 
-        #LOOP until timeout reached (ex. 2h)
+        try:
+            if self.is_tradable(self.ticker):
+                #LOOP until timeout reached (ex. 2h)
         
-        while True:
-            #POINT ECHO
-            # ask broker/API if we have an open position with "asset"
-            if self.check_position(self.ticker, doNotWait=True):
-                log.info('There is already an open position with that asset! Aborting...')
-                return False # aborting execution
+                while True:
+                    #POINT ECHO
+                    # ask broker/API if we have an open position with "asset"
+                    if self.check_position(self.ticker, doNotWait=True):
+                        log.info('There is already an open position with that asset! Aborting...')
+                        return False # aborting execution
 
-            # POINT DELTA
-            while True:
+                    # POINT DELTA
+                    while True:
 
-                # find general trend
-                self.trend = self.get_general_trend(self.ticker)
-                if self.trend == 'no trend':
-                    log.info('No general trend found for %s! Going out...' % self.ticker)
-                    return False # aborting execution
-                
-                # confirm instant trend
-                if not self.get_instatnt_trend(self.ticker, self.trend):
-                    log.info('The instant trend is not confirmed. Going back.')
-                    continue # If failed go back to POINT DELTA
+                        # find general trend
+                        self.trend = self.get_general_trend(self.ticker)
+                        if self.trend == 'no trend':
+                            log.info('No general trend found for %s! Going out...' % self.ticker)
+                            return False # aborting execution
+                        
+                        # confirm instant trend
+                        if not self.get_instant_trend(self.ticker, self.trend):
+                            log.info('The instant trend is not confirmed. Going back.')
+                            continue # If failed go back to POINT DELTA
 
-                if not self.get_rsi(self.ticker, self.trend):
-                    log.info('The RSI is not confirmed. Going back.')
-                    continue # If failed go back to POINT DELTA
+                        if not self.get_rsi(self.ticker, self.trend):
+                            log.info('The RSI is not confirmed. Going back.')
+                            continue # If failed go back to POINT DELTA
 
-                if not self.get_stochastic(self.ticker, self.trend):
-                    log.info('The Stochastic analysis is not confirmed. Going back.')
-                    continue # If failed go back to POINT DELTA
+                        # if not self.get_stochastic(self.ticker, self.trend):
+                        #     log.info('The Stochastic analysis is not confirmed. Going back.')
+                        #     continue # If failed go back to POINT DELTA
 
-                log.info('All criteria have been met for trade. Procceding with trade.')
-                break
+                        log.info('All criteria have been met for trade. Procceding with trade.')
+                        break
 
-            # get the current price
-            self.current_price = self.get_current_price(self.ticker)
+                    # get the current price
+                    self.current_price = self.get_current_price(self.ticker)
 
-            # decide the total amount to invest
-            shares_quantity = self.get_shares_amount(self.current_price)
+                    # decide the total amount to invest
+                    shares_quantity = self.get_shares_amount(self.current_price)
 
-            # submit order (limit)
-            #submit_order(params)
+                    # submit order (limit)
+                    submit_order = self.submit_order('limit', self.trend, self.ticker, shares_quantity, self.current_price, False)
 
-            # check position: see if position exists
-            if not self.check_position(self.ticker):
-                # cancel pending order
-                continue # go back to POINT ECHO
+                    # check position: see if position exists
+                    if not self.check_position(self.ticker):
+                        # cancel pending order
+                        self.cancel_pending_order(self.ticker)
+                        continue # go back to POINT ECHO
 
-            # ENTER POSITION MODE
-            successful_operation = self.enter_position_mode(self.ticker, self.trend)
-                # If any return true get out
+                    # ENTER POSITION MODE
+                    successful_operation = self.enter_position_mode(self.ticker, self.order_id, self.trend)
+                        # If any return true get out
 
-            #GET OUT: loop until succeed
-            while True:
-                # submit order (market)
+                    #GET OUT: loop until succeed
+                    while True:
+                        # submit order (market)
+                        self.submit_order('market', self.trend, self.ticker, shares_quantity, self.current_price, True)
 
-                # check position is cleared
-                if not self.check_position(self.ticker, doNotWait=True):
-                    break
+                        # check position is cleared
+                        if not self.check_position(self.ticker, doNotWait=True):
+                            break
 
-                time.sleep(10) # wait 10 secs
+                        time.sleep(10) # wait 10 secs
 
-            # end of execution
-            return successful_operation
+                    # end of execution
+                    return successful_operation
+            else:
+                log.info('Not tradable at the moment. exiting')
+                sys.exit()
+        except Exception as e:
+            log.error('Error at is tradable check function')
+            log.error(str(e))
+            sys.exit()  
